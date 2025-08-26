@@ -26,6 +26,11 @@ type ProfileLookupContext = {
     AUTH_TOKEN?: string;
 }
 
+// we expect the typical twilio authorization headers to be present as this one will be used from headers to ensure auth
+type ProfileLookupHeaders = {
+    authorization?: string;
+}
+
 // URLS we will need in the axios requests
 const profileConnectorURL = "https://preview.twilio.com/ProfileConnector";
 const contextUrl = "https://context.twilio.com/v1/Contexts";
@@ -43,28 +48,29 @@ const headersFormUrlEncoded = {
 
 export const handler: ServerlessFunctionSignature = async function (
     context: Context<ProfileLookupContext>,
-    event: ServerlessEventObject<ProfileLookupEvent>,
+    event: ServerlessEventObject<ProfileLookupEvent,ProfileLookupHeaders >,
     callback: ServerlessCallback
 ) {
     // TODO would love to use client for these calls instead of axios
     // const client = context.getTwilioClient();
-    const { ACCOUNT_SID, AUTH_TOKEN, phone_key = "phone", email_key = "email" } = context;
-
-    const auth: AxiosBasicCredentials = {
-        username: ACCOUNT_SID as string,
-        password: AUTH_TOKEN as string
-    };
+    const { ACCOUNT_SID, phone_key = "phone", email_key = "email" } = context;
+    const { headers } = event.request as { headers: ProfileLookupHeaders };
+    const { authorization } = headers;
 
     // Create a axios config for JSON  content-type
     const axiosJSONConfig = {
-        headersJSON,
-        auth
+        headers: {
+            ...headersJSON,
+            "Authorization": authorization
+        }
     };
 
     // Create a axios config for FormUrlEncoded content-type
     const axiosFormUrlEncodedConfig = {
-        headersFormUrlEncoded,
-        auth
+        headers:{
+            ...headersFormUrlEncoded,
+            "Authorization": authorization
+        }
     };
 
     // saveToContext only defaults to true if not provided, if false is provided it should be that.
@@ -107,9 +113,29 @@ export const handler: ServerlessFunctionSignature = async function (
         return unindentifiedProfile;
     }
 
+    async function getContextFromTaskSid(){
+        const { data: contextLookupData } = await axios.get(`${contextUrl}?LookupId=${taskSid}`,axiosJSONConfig);
+        const { contexts } = contextLookupData;
+        if (contexts && contexts.length === 1) {
+            return {
+                contextSid: contexts[0]?.sid,
+                profileConnectSid: contexts[0]?.attributes?.profileConnectSid
+            };
+        } else if (contexts && contexts.length > 1) {
+            const contextWithPCS = contexts.find((context:any)=>{
+                console.log(context.attributes);
+                return context.attributes?.ProfileData.profileConnectSid.value;
+            }); 
+            return {
+                contextSid: contextWithPCS?.sid || contexts[0].sid,
+                profileConnectSid: contextWithPCS?.attributes?.ProfileData.profileConnectSid.value
+            };
+        }
+    }
+
     // this will create a new context and add the profileConnectSid and connectorName to it, 
     // once the context is made it will use the taskSid to make it a lookupId for this task.
-    async function postToContextAndAttachLookupId(profileConnectSid: string) {
+    async function postToContextAndAttachLookupId(profileConnectSid: string, currentContextSid?: string) {
         const contextBody = {
             namespace: "Twilio",
             attribute_group: "ProfileData",
@@ -119,11 +145,17 @@ export const handler: ServerlessFunctionSignature = async function (
                 connectorName: profileConnectorInstanceSid,
             }
         };
-        //create a context with the profile sid that we found
-        const { data: contextData } = await axios.post(contextUrl, contextBody, axiosJSONConfig);
-        const { sid: contextSid } = contextData;
-        // add the task sid that we were sent to the lookup of the new context we created
-        await axios.post(`${contextUrl}/${contextSid}/LookupIds`, { id: taskSid }, axiosJSONConfig);
+        // we have a context already for this task post the profileConnectSid and connector name to it
+        if(currentContextSid){
+            await axios.post(`${contextUrl}/${currentContextSid}`, contextBody, axiosJSONConfig);
+        } else {
+            //create a context with the profile sid that we found
+            const { data: contextData } = await axios.post(contextUrl, contextBody, axiosJSONConfig);
+            const { sid: contextSid } = contextData;
+            // add the task sid that we were sent to the lookup of the new context we created
+            await axios.post(`${contextUrl}/${contextSid}/LookupIds`, { id: taskSid }, axiosJSONConfig);
+        }
+        
     }
     // Note: ATM hitting this route from a function is impossible leaving the stub so if it is ever opened to the public we can hit it.
     async function postToAISummary(profileConnectSid: string) {
@@ -131,6 +163,7 @@ export const handler: ServerlessFunctionSignature = async function (
         // await axios.post(`${profileConnectorURL}/Profiles/${profileConnectSid}/Summary`, {sid: profileConnectSid}, axiosJSONConfig);
         return;
     }
+    const currentContext = await getContextFromTaskSid();
 
     const profileConnectorInstanceSid = await getProfileConnectorInstanceSid();
     const profile = await findProfile();
@@ -138,7 +171,7 @@ export const handler: ServerlessFunctionSignature = async function (
     if (profile) {
         const { sid: profileConnectSid } = profile.profile;
         // if we have a taskSid and saveToContext is not set to false
-        taskSid && saveToContext && postToContextAndAttachLookupId(profileConnectSid);
+        taskSid && saveToContext && postToContextAndAttachLookupId(profileConnectSid, currentContext?.contextSid);
         doPostToAISummary && await postToAISummary(profileConnectSid);
         callback(null, profile.profile)
     } else {
