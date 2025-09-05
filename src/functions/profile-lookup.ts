@@ -114,12 +114,15 @@ export const handler: ServerlessFunctionSignature = async function (
     }
 
     async function getContextFromTaskSid(){
+        if (!taskSid){
+            return;
+        }
         const { data: contextLookupData } = await axios.get(`${contextUrl}?LookupId=${taskSid}`,axiosJSONConfig);
         const { contexts } = contextLookupData;
         if (contexts && contexts.length === 1) {
             return {
                 contextSid: contexts[0]?.sid,
-                profileConnectSid: contexts[0]?.attributes?.profileConnectSid
+                profileConnectSid: contexts[0]?.attributes?.ProfileData.profileConnectSid.value
             };
         } else if (contexts && contexts.length > 1) {
             const contextWithPCS = contexts.find((context:any)=>{
@@ -158,11 +161,12 @@ export const handler: ServerlessFunctionSignature = async function (
         
     }
     // Note: ATM hitting this route from a function is impossible leaving the stub so if it is ever opened to the public we can hit it.
-    async function postToAISummary(profileConnectSid: string) {
+    // async function postToAISummary(profileConnectSid: string) {
         
-        // await axios.post(`${profileConnectorURL}/Profiles/${profileConnectSid}/Summary`, {sid: profileConnectSid}, axiosJSONConfig);
-        return;
-    }
+    //     // await axios.post(`${profileConnectorURL}/Profiles/${profileConnectSid}/Summary`, {sid: profileConnectSid}, axiosJSONConfig);
+    //     return;
+    // }
+    
     const currentContext = await getContextFromTaskSid();
 
     const profileConnectorInstanceSid = await getProfileConnectorInstanceSid();
@@ -172,7 +176,7 @@ export const handler: ServerlessFunctionSignature = async function (
         const { sid: profileConnectSid } = profile.profile;
         // if we have a taskSid and saveToContext is not set to false
         taskSid && saveToContext && postToContextAndAttachLookupId(profileConnectSid, currentContext?.contextSid);
-        doPostToAISummary && await postToAISummary(profileConnectSid);
+        // doPostToAISummary && await postToAISummary(profileConnectSid);
         callback(null, profile.profile)
     } else {
         callback(null, undefined);
